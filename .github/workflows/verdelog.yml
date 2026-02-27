@@ -26,6 +26,13 @@ jobs:
           pip install playwright python-dotenv
           python -m playwright install --with-deps chromium
 
+      - name: Network check
+        run: |
+          set -x
+          python -V
+          nslookup verdeapp.verdelog.com.br || true
+          curl -I -L --max-time 30 https://verdeapp.verdelog.com.br/auth || true
+
       - name: Run script
         env:
           EMAIL: ${{ secrets.VERDELOG_EMAIL }}
