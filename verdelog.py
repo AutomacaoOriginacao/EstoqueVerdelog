@@ -72,30 +72,67 @@ def enviar_email_com_anexo_bytes(nome_arquivo: str, conteudo: bytes):
     print(f"E-mail enviado com sucesso para: {GMAIL_TO}")
 
 
+import time
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+
+def goto_com_retry(page, url: str, tentativas: int = 3):
+    # Timeouts mais realistas para CI
+    page.set_default_timeout(120_000)
+    page.set_default_navigation_timeout(120_000)
+
+    last_err = None
+    for i in range(1, tentativas + 1):
+        try:
+            print(f"Navegando para {url} (tentativa {i}/{tentativas})...")
+            # "load" pode nunca acontecer em apps modernas; domcontentloaded é bem mais robusto
+            page.goto(url, wait_until="domcontentloaded", timeout=120_000)
+            return
+        except PlaywrightTimeoutError as e:
+            last_err = e
+            print(f"Timeout ao navegar: {e}")
+            # backoff simples
+            time.sleep(3 * i)
+
+    raise last_err
+
+
 def baixar_estoque_analitico_e_enviar_email(headless: bool = True):
     validar_variaveis_ambiente()
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(accept_downloads=True)
+        browser = p.chromium.launch(
+            headless=headless,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
+        )
+        context = browser.new_context(
+            accept_downloads=True,
+            ignore_https_errors=True,
+        )
         page = context.new_page()
 
-        # 1) Login
         print("Acessando página de login...")
-        page.goto(LOGIN_URL)
+        goto_com_retry(page, LOGIN_URL)
+
+        # Em vez de assumir que já carregou tudo, espera pelo campo existir
+        page.wait_for_selector("#email", timeout=120_000)
+
+        print("Preenchendo credenciais...")
         page.fill("#email", USER_EMAIL)
         page.fill("#password", USER_PASSWORD)
+
+        print("Enviando formulário de login...")
         page.click("button[type='submit']")
-        page.wait_for_load_state("networkidle")
 
-        # 2) /estoque
-        print("Indo para /estoque...")
+        # Melhor esperar URL/elemento do app do que networkidle (que pode nunca ficar "idle")
         try:
-            page.wait_for_url("**/estoque", timeout=5000)
-        except Exception:
-            page.goto(ESTOQUE_URL)
-            page.wait_for_load_state("networkidle")
-
+            page.wait_for_url("**/estoque", timeout=120_000)
+        except PlaywrightTimeoutError:
+            # fallback: navega manualmente
+            goto_com_retry(page, ESTOQUE_URL)
+            
         # 3) Analítico
         print('Clicando em "Analítico"...')
         try:
@@ -139,3 +176,4 @@ def baixar_estoque_analitico_e_enviar_email(headless: bool = True):
 if __name__ == "__main__":
     # No GitHub Actions: headless=True
     baixar_estoque_analitico_e_enviar_email(headless=True)
+
